@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: python -m pip install .
+      - name: Check source
+        run: |
+          python -m pip install ruff
+          python -m compileall -q src
+          ruff check --select E9,F63,F7,F82 src
+      - name: Run sparse-data and Leiden smoke tests
+        run: |
+          python - <<'PY'
+          import numpy as np
+          from importlib.metadata import PackageNotFoundError, version
+
+          import scanpy as sc
+          from scipy import sparse
+          import SpaGCN
+
+          try:
+              version("louvain")
+          except PackageNotFoundError:
+              pass
+          else:
+              raise AssertionError("obsolete louvain distribution was installed")
+
+          rng = np.random.default_rng(42)
+          image = np.ones((8, 8, 3), dtype=float)
+          histology_adjacency = SpaGCN.calculate_adj_matrix(
+              [0, 1],
+              [0, 1],
+              x_pixel=[2, 5],
+              y_pixel=[2, 5],
+              image=image,
+              beta=3,
+          )
+          assert np.isfinite(histology_adjacency).all()
+
+          adata = sc.AnnData(sparse.csr_matrix(rng.random((30, 12))))
+          coordinates = np.column_stack((np.arange(30), np.zeros(30)))
+          adjacency = np.linalg.norm(
+              coordinates[:, None, :] - coordinates[None, :, :], axis=2
+          )
+          model = SpaGCN.SpaGCN()
+          model.set_l(1.0)
+          model.train(
+              adata,
+              adjacency,
+              num_pcs=5,
+              max_epochs=2,
+              n_neighbors=5,
+              res=0.5,
+          )
+          labels, probabilities = model.predict()
+          assert labels.shape == (30,)
+          assert probabilities.shape[0] == 30
+          PY
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build and verify distributions
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
