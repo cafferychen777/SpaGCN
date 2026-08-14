@@ -32,6 +32,9 @@ Compatibility fixes in this fork include:
 
 - current SciPy sparse-array conversion through `toarray()`;
 - corrected `use_raw` behavior in `plot_log_exp`;
+- mathematically correct DEC soft assignments using the Student's t kernel;
+- native sparse PCA plus cached resolution-search preprocessing;
+- bounded Gaussian-kernel workspaces and zero-copy float32 tensor conversion;
 - minimal runtime dependency metadata derived from imports;
 - maintained igraph Leiden initialization instead of the obsolete Louvain
   extension;

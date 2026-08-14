@@ -4,10 +4,46 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 from sklearn.cluster import KMeans
 import torch.optim as optim
-import pandas as pd
 import numpy as np
 from .layers import GraphConvolution
 from ._clustering import graph_cluster_labels
+
+
+def _student_t_assignments(embeddings, cluster_centers, alpha):
+    """Compute normalized DEC soft assignments with a Student's t kernel."""
+    if alpha <= 0:
+        raise ValueError("alpha must be greater than zero")
+
+    squared_distances = torch.sum(
+        (embeddings.unsqueeze(1) - cluster_centers) ** 2,
+        dim=2,
+    )
+    unnormalized = torch.pow(
+        1.0 + squared_distances / alpha,
+        -((alpha + 1.0) / 2.0),
+    )
+    return unnormalized / torch.sum(unnormalized, dim=1, keepdim=True)
+
+
+def _float_tensor(value):
+    return torch.as_tensor(value, dtype=torch.float32)
+
+
+def _cluster_centers(features, labels):
+    labels = np.asarray(labels)
+    _, inverse = np.unique(labels, return_inverse=True)
+    centers = np.zeros((inverse.max() + 1, features.shape[1]), dtype=np.float32)
+    np.add.at(centers, inverse, features)
+    centers /= np.bincount(inverse)[:, None]
+    return centers
+
+
+def _make_optimizer(parameters, opt, lr, weight_decay):
+    if opt == "sgd":
+        return optim.SGD(parameters, lr=lr, momentum=0.9)
+    if opt in {"adam", "admin"}:
+        return optim.Adam(parameters, lr=lr, weight_decay=weight_decay)
+    raise ValueError("opt must be 'sgd' or 'adam'")
 
 
 class simple_GC_DEC(nn.Module):
@@ -20,12 +56,7 @@ class simple_GC_DEC(nn.Module):
 
     def forward(self, x, adj):
         x = self.gc(x, adj)
-        q = 1.0 / (
-            (1.0 + torch.sum((x.unsqueeze(1) - self.mu) ** 2, dim=2) / self.alpha)
-            + 1e-8
-        )
-        q = q ** (self.alpha + 1.0) / 2.0
-        q = q / torch.sum(q, dim=1, keepdim=True)
+        q = _student_t_assignments(x, self.mu, self.alpha)
         return x, q
 
     def loss_function(self, p, q):
@@ -62,12 +93,10 @@ class simple_GC_DEC(nn.Module):
         tol=1e-3,
     ):
         self.trajectory = []
-        if opt == "sgd":
-            optimizer = optim.SGD(self.parameters(), lr=lr, momentum=0.9)
-        elif opt == "admin":
-            optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
-
-        features = self.gc(torch.FloatTensor(X), torch.FloatTensor(adj))
+        X = _float_tensor(X)
+        adj = _float_tensor(adj)
+        with torch.no_grad():
+            features = self.gc(X, adj)
         # ----------------------------------------------------------------
         if init == "kmeans":
             print("Initializing cluster centers with kmeans, n_clusters known")
@@ -78,10 +107,10 @@ class simple_GC_DEC(nn.Module):
                 y_pred = kmeans.fit_predict(features.detach().numpy())
             else:
                 # ------Kmeans only use exp info, no spatial
-                y_pred = kmeans.fit_predict(X)  # Here we use X as numpy
+                y_pred = kmeans.fit_predict(X.numpy())
         elif init in {"leiden", "louvain"}:
             print("Initializing cluster centers with Leiden, resolution = ", res)
-            values = features.detach().numpy() if init_spa else X
+            values = features.numpy() if init_spa else X.numpy()
             y_pred = graph_cluster_labels(
                 values,
                 method=init,
@@ -92,22 +121,17 @@ class simple_GC_DEC(nn.Module):
         # ----------------------------------------------------------------
         y_pred_last = y_pred
         self.mu = Parameter(torch.Tensor(self.n_clusters, self.nhid))
-        X = torch.FloatTensor(X)
-        adj = torch.FloatTensor(adj)
         self.trajectory.append(y_pred)
-        features = pd.DataFrame(
-            features.detach().numpy(), index=np.arange(0, features.shape[0])
-        )
-        Group = pd.Series(y_pred, index=np.arange(0, features.shape[0]), name="Group")
-        Mergefeature = pd.concat([features, Group], axis=1)
-        cluster_centers = np.asarray(Mergefeature.groupby("Group").mean()).copy()
-
-        self.mu.data.copy_(torch.Tensor(cluster_centers))
+        cluster_centers = _cluster_centers(features.numpy(), y_pred)
+        with torch.no_grad():
+            self.mu.copy_(_float_tensor(cluster_centers))
+        optimizer = _make_optimizer(self.parameters(), opt, lr, weight_decay)
         self.train()
         for epoch in range(max_epochs):
             if epoch % update_interval == 0:
-                _, q = self.forward(X, adj)
-                p = self.target_distribution(q).data
+                with torch.no_grad():
+                    _, q = self.forward(X, adj)
+                    p = self.target_distribution(q)
             if epoch % 10 == 0:
                 print("Epoch ", epoch)
             optimizer.zero_grad()
@@ -116,10 +140,10 @@ class simple_GC_DEC(nn.Module):
             loss.backward()
             optimizer.step()
             if epoch % trajectory_interval == 0:
-                self.trajectory.append(torch.argmax(q, dim=1).data.cpu().numpy())
+                self.trajectory.append(torch.argmax(q, dim=1).detach().cpu().numpy())
 
             # Check stop criterion
-            y_pred = torch.argmax(q, dim=1).data.cpu().numpy()
+            y_pred = torch.argmax(q, dim=1).detach().cpu().numpy()
             delta_label = np.sum(y_pred != y_pred_last).astype(np.float32) / X.shape[0]
             y_pred_last = y_pred
             if epoch > 0 and (epoch - 1) % update_interval == 0 and delta_label < tol:
@@ -140,27 +164,20 @@ class simple_GC_DEC(nn.Module):
         opt="sgd",
     ):
         print("Initializing cluster centers with kmeans.")
-        if opt == "sgd":
-            optimizer = optim.SGD(self.parameters(), lr=lr, momentum=0.9)
-        elif opt == "admin":
-            optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
-        X = torch.FloatTensor(X)
-        adj = torch.FloatTensor(adj)
-        features, _ = self.forward(X, adj)
-        features = pd.DataFrame(
-            features.detach().numpy(), index=np.arange(0, features.shape[0])
-        )
-        Group = pd.Series(init_y, index=np.arange(0, features.shape[0]), name="Group")
-        Mergefeature = pd.concat([features, Group], axis=1)
-        cluster_centers = np.asarray(Mergefeature.groupby("Group").mean()).copy()
-        self.mu.data.copy_(torch.Tensor(cluster_centers))
+        optimizer = _make_optimizer(self.parameters(), opt, lr, weight_decay)
+        X = _float_tensor(X)
+        adj = _float_tensor(adj)
+        with torch.no_grad():
+            features, _ = self.forward(X, adj)
+        cluster_centers = _cluster_centers(features.detach().numpy(), init_y)
+        with torch.no_grad():
+            self.mu.copy_(_float_tensor(cluster_centers))
         self.train()
         for epoch in range(max_epochs):
             if epoch % update_interval == 0:
-                _, q = self.forward(torch.FloatTensor(X), torch.FloatTensor(adj))
-                p = self.target_distribution(q).data
-            X = torch.FloatTensor(X)
-            adj = torch.FloatTensor(adj)
+                with torch.no_grad():
+                    _, q = self.forward(X, adj)
+                    p = self.target_distribution(q)
             optimizer.zero_grad()
             z, q = self(X, adj)
             loss = self.loss_function(p, q)
@@ -168,7 +185,8 @@ class simple_GC_DEC(nn.Module):
             optimizer.step()
 
     def predict(self, X, adj):
-        z, q = self(torch.FloatTensor(X), torch.FloatTensor(adj))
+        with torch.no_grad():
+            z, q = self(_float_tensor(X), _float_tensor(adj))
         return z, q
 
 
@@ -188,12 +206,7 @@ class GC_DEC(nn.Module):
         x = F.relu(x)
         x = F.dropout(x, self.dropout, training=True)
         x = self.gc2(x, adj)
-        q = 1.0 / (
-            (1.0 + torch.sum((x.unsqueeze(1) - self.mu) ** 2, dim=2) / self.alpha)
-            + 1e-6
-        )
-        q = q ** (self.alpha + 1.0) / 2.0
-        q = q / torch.sum(q, dim=1, keepdim=True)
+        q = _student_t_assignments(x, self.mu, self.alpha)
         return x, q
 
     def loss_function(self, p, q):
@@ -227,12 +240,12 @@ class GC_DEC(nn.Module):
     ):
         self.trajectory = []
         print("Initializing cluster centers with kmeans.")
-        if opt == "sgd":
-            optimizer = optim.SGD(self.parameters(), lr=lr, momentum=0.9)
-        elif opt == "admin":
-            optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = _make_optimizer(self.parameters(), opt, lr, weight_decay)
 
-        features, _ = self.forward(torch.FloatTensor(X), torch.FloatTensor(adj))
+        X = _float_tensor(X)
+        adj = _float_tensor(adj)
+        with torch.no_grad():
+            features, _ = self.forward(X, adj)
         # ----------------------------------------------------------------
 
         if init == "kmeans":
@@ -241,31 +254,25 @@ class GC_DEC(nn.Module):
             # y_pred = kmeans.fit_predict(X)  #Here we use X as numpy
             # Kmeans use exp and spatial
             kmeans = KMeans(self.n_clusters, n_init=20)
-            y_pred = kmeans.fit_predict(features.detach().numpy())
+            y_pred = kmeans.fit_predict(features.numpy())
         elif init in {"leiden", "louvain"}:
             y_pred = graph_cluster_labels(
-                features.detach().numpy(),
+                features.numpy(),
                 method=init,
                 n_neighbors=n_neighbors,
                 resolution=res,
             )
         # ----------------------------------------------------------------
-        X = torch.FloatTensor(X)
-        adj = torch.FloatTensor(adj)
         self.trajectory.append(y_pred)
-        features = pd.DataFrame(
-            features.detach().numpy(), index=np.arange(0, features.shape[0])
-        )
-        Group = pd.Series(y_pred, index=np.arange(0, features.shape[0]), name="Group")
-        Mergefeature = pd.concat([features, Group], axis=1)
-        cluster_centers = np.asarray(Mergefeature.groupby("Group").mean())
-
-        self.mu.data.copy_(torch.Tensor(cluster_centers))
+        cluster_centers = _cluster_centers(features.numpy(), y_pred)
+        with torch.no_grad():
+            self.mu.copy_(_float_tensor(cluster_centers))
         self.train()
         for epoch in range(max_epochs):
             if epoch % update_interval == 0:
-                _, q = self.forward(X, adj)
-                p = self.target_distribution(q).data
+                with torch.no_grad():
+                    _, q = self.forward(X, adj)
+                    p = self.target_distribution(q)
             if epoch % 100 == 0:
                 print("Epoch ", epoch)
             optimizer.zero_grad()
@@ -273,7 +280,7 @@ class GC_DEC(nn.Module):
             loss = self.loss_function(p, q)
             loss.backward()
             optimizer.step()
-            self.trajectory.append(torch.argmax(q, dim=1).data.cpu().numpy())
+            self.trajectory.append(torch.argmax(q, dim=1).detach().cpu().numpy())
 
     def fit_with_init(
         self,
@@ -287,27 +294,20 @@ class GC_DEC(nn.Module):
         opt="sgd",
     ):
         print("Initializing cluster centers with kmeans.")
-        if opt == "sgd":
-            optimizer = optim.SGD(self.parameters(), lr=lr, momentum=0.9)
-        elif opt == "admin":
-            optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
-        X = torch.FloatTensor(X)
-        adj = torch.FloatTensor(adj)
-        features, _ = self.forward(X, adj)
-        features = pd.DataFrame(
-            features.detach().numpy(), index=np.arange(0, features.shape[0])
-        )
-        Group = pd.Series(init_y, index=np.arange(0, features.shape[0]), name="Group")
-        Mergefeature = pd.concat([features, Group], axis=1)
-        cluster_centers = np.asarray(Mergefeature.groupby("Group").mean())
-        self.mu.data.copy_(torch.Tensor(cluster_centers))
+        optimizer = _make_optimizer(self.parameters(), opt, lr, weight_decay)
+        X = _float_tensor(X)
+        adj = _float_tensor(adj)
+        with torch.no_grad():
+            features, _ = self.forward(X, adj)
+        cluster_centers = _cluster_centers(features.numpy(), init_y)
+        with torch.no_grad():
+            self.mu.copy_(_float_tensor(cluster_centers))
         self.train()
         for epoch in range(max_epochs):
             if epoch % update_interval == 0:
-                _, q = self.forward(torch.FloatTensor(X), torch.FloatTensor(adj))
-                p = self.target_distribution(q).data
-            X = torch.FloatTensor(X)
-            adj = torch.FloatTensor(adj)
+                with torch.no_grad():
+                    _, q = self.forward(X, adj)
+                    p = self.target_distribution(q)
             optimizer.zero_grad()
             z, q = self(X, adj)
             loss = self.loss_function(p, q)
@@ -315,5 +315,6 @@ class GC_DEC(nn.Module):
             optimizer.step()
 
     def predict(self, X, adj):
-        z, q = self(torch.FloatTensor(X), torch.FloatTensor(adj))
+        with torch.no_grad():
+            z, q = self(_float_tensor(X), _float_tensor(adj))
         return z, q

@@ -6,6 +6,7 @@ import random
 import torch
 from .SpaGCN import SpaGCN
 from ._clustering import graph_cluster_labels
+from ._data import gaussian_adjacency, mean_gaussian_neighborhood, pca_embedding
 
 
 def prefilter_cells(
@@ -97,8 +98,7 @@ def prefilter_specialgenes(adata, Gene1Pattern="ERCC", Gene2Pattern="MT-"):
 
 
 def calculate_p(adj, l):
-    adj_exp = np.exp(-1 * (adj**2) / (2 * (l**2)))
-    return np.mean(np.sum(adj_exp, 1)) - 1
+    return mean_gaussian_neighborhood(adj, l) - 1
 
 
 def test_l(adj, list_l):
@@ -572,13 +572,15 @@ def search_res(
     random.seed(r_seed)
     torch.manual_seed(t_seed)
     np.random.seed(n_seed)
+    embed = pca_embedding(adata.X, 50)
+    adj_exp = gaussian_adjacency(adj, l)
     res = start
     print("Start at res = ", res, "step = ", step)
     clf = SpaGCN()
     clf.set_l(l)
-    clf.train(
-        adata,
-        adj,
+    clf._train_prepared(
+        embed,
+        adj_exp,
         init_spa=True,
         init="leiden",
         res=res,
@@ -597,9 +599,9 @@ def search_res(
         old_sign = 1 if (old_num < target_num) else -1
         clf = SpaGCN()
         clf.set_l(l)
-        clf.train(
-            adata,
-            adj,
+        clf._train_prepared(
+            embed,
+            adj_exp,
             init_spa=True,
             init="leiden",
             res=res + step * old_sign,
