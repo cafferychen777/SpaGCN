@@ -2,6 +2,8 @@ import numpy as np
 from scipy.sparse import issparse
 from sklearn.decomposition import PCA
 
+from ._compat import SPAGCN_1_2_7, resolve_compat
+
 
 def pca_embedding(expression, n_components, max_dense_bytes=64 << 20):
     """Return a float32 PCA embedding with adaptive sparse-memory handling."""
@@ -60,3 +62,35 @@ def mean_gaussian_neighborhood(adjacency, length_scale, max_workspace_bytes=64 <
         np.exp(workspace, out=workspace)
         total += workspace.sum(dtype=np.float64)
     return total / adjacency.shape[0]
+
+
+def legacy_pca_embedding(expression, n_components):
+    """PCA exactly as SpaGCN 1.2.7: densify, fit, then transform (float64)."""
+    if issparse(expression):
+        expression = expression.toarray()
+    pca = PCA(n_components=n_components)
+    pca.fit(expression)
+    return pca.transform(expression)
+
+
+def legacy_gaussian_adjacency(adjacency, length_scale):
+    """Gaussian adjacency exactly as SpaGCN 1.2.7 (float64)."""
+    return np.exp(-1 * (adjacency**2) / (2 * (length_scale**2)))
+
+
+def embed_expression(expression, n_components, compat):
+    if resolve_compat(compat) == SPAGCN_1_2_7:
+        return legacy_pca_embedding(expression, n_components)
+    return pca_embedding(expression, n_components)
+
+
+def exp_adjacency(adjacency, length_scale, compat):
+    if resolve_compat(compat) == SPAGCN_1_2_7:
+        return legacy_gaussian_adjacency(adjacency, length_scale)
+    return gaussian_adjacency(adjacency, length_scale)
+
+
+def mean_neighborhood(adjacency, length_scale, compat):
+    if resolve_compat(compat) == SPAGCN_1_2_7:
+        return np.mean(np.sum(legacy_gaussian_adjacency(adjacency, length_scale), 1))
+    return mean_gaussian_neighborhood(adjacency, length_scale)

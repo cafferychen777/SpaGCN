@@ -7,6 +7,8 @@ import torch
 from scipy import sparse
 
 from SpaGCN._data import (
+    embed_expression,
+    exp_adjacency,
     gaussian_adjacency,
     mean_gaussian_neighborhood,
     pca_embedding,
@@ -91,10 +93,12 @@ class ResolutionSearchTests(unittest.TestCase):
         second_labels = np.arange(60, dtype=int) % 2
 
         with (
-            patch("SpaGCN.util.pca_embedding", wraps=pca_embedding) as prepare_pca,
             patch(
-                "SpaGCN.util.gaussian_adjacency",
-                wraps=gaussian_adjacency,
+                "SpaGCN.util.embed_expression", wraps=embed_expression
+            ) as prepare_pca,
+            patch(
+                "SpaGCN.util.exp_adjacency",
+                wraps=exp_adjacency,
             ) as prepare_adjacency,
             patch("SpaGCN.util.SpaGCN._train_prepared") as train_prepared,
             patch(
@@ -123,7 +127,7 @@ class ResolutionSearchTests(unittest.TestCase):
 
 
 class TrainingMemoryTests(unittest.TestCase):
-    def test_initialized_cluster_centers_are_registered_with_the_optimizer(self):
+    def test_modern_registers_cluster_centers_with_the_optimizer(self):
         rng = np.random.default_rng(5)
         features = rng.random((12, 3), dtype=np.float32)
         adjacency = np.eye(12, dtype=np.float32)
@@ -134,7 +138,7 @@ class TrainingMemoryTests(unittest.TestCase):
             optimized_parameters.extend(parameters)
             return _make_optimizer(parameters, opt, lr, weight_decay)
 
-        model = simple_GC_DEC(3, 3)
+        model = simple_GC_DEC(3, 3, compat="modern")
         with patch("SpaGCN.models._make_optimizer", side_effect=capture_optimizer):
             model.fit(
                 features,

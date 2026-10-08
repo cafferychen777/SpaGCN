@@ -35,7 +35,13 @@ def detect_spatial_domains_ez_mode(
     r_seed=100,
     t_seed=100,
     n_seed=100,
+    compat=None,
 ):
+    """Detect spatial domains with the SpaGCN tutorial workflow.
+
+    ``compat`` selects ``"spagcn-1.2.7"`` (default; published SpaGCN behavior)
+    or ``"modern"`` (trained centers and DEC kernel); see :class:`SpaGCN`.
+    """
     adj = calculate_adj_matrix(
         x=x_pixel,
         y=y_pixel,
@@ -50,7 +56,7 @@ def detect_spatial_domains_ez_mode(
     prefilter_specialgenes(adata)
     sc.pp.normalize_per_cell(adata)
     sc.pp.log1p(adata)
-    l = search_l(p, adj, start=0.01, end=1000, tol=0.01, max_run=100)
+    l = search_l(p, adj, start=0.01, end=1000, tol=0.01, max_run=100, compat=compat)
     res = search_res(
         adata,
         adj,
@@ -64,6 +70,7 @@ def detect_spatial_domains_ez_mode(
         r_seed=r_seed,
         t_seed=t_seed,
         n_seed=n_seed,
+        compat=compat,
     )
     clf = SpaGCN()
     clf.set_l(l)
@@ -74,11 +81,11 @@ def detect_spatial_domains_ez_mode(
         adata,
         adj,
         init_spa=True,
-        init="leiden",
         res=res,
         tol=5e-3,
         lr=0.05,
         max_epochs=200,
+        compat=compat,
     )
     y_pred, prob = clf.predict()
     return y_pred

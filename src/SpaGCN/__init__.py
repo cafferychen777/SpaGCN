@@ -3,8 +3,9 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("spagcn-modern")
 except PackageNotFoundError:
-    __version__ = "1.3.0"
+    __version__ = "1.4.0"
 
+from ._compat import COMPAT_MODES, DEFAULT_COMPAT
 from .SpaGCN import SpaGCN, multiSpaGCN
 from .calculate_adj import (
     calculate_adj_matrix,
@@ -44,6 +45,8 @@ from .util import (
 )
 
 __all__ = [
+    "COMPAT_MODES",
+    "DEFAULT_COMPAT",
     "Geary_C",
     "Moran_I",
     "SpaGCN",

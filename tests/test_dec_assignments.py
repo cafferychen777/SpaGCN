@@ -74,16 +74,18 @@ class StudentTAssignmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "greater than zero"):
             _student_t_assignments(self.embeddings, self.centers, 0.0)
 
-    def test_both_dec_models_use_correct_assignments(self):
+    def test_modern_dec_models_use_correct_assignments(self):
         adjacency = torch.eye(len(self.embeddings), dtype=torch.float64)
         expected = torch.from_numpy(self.expected_assignments())
 
-        simple_model = simple_GC_DEC(2, 2, alpha=self.alpha).double()
+        simple_model = simple_GC_DEC(2, 2, alpha=self.alpha, compat="modern").double()
         simple_model.gc = IdentityGraphConvolution()
         simple_model.mu = Parameter(self.centers.clone())
         _, simple_assignments = simple_model(self.embeddings, adjacency)
 
-        model = GC_DEC(2, 2, 2, n_clusters=2, dropout=0.0, alpha=self.alpha).double()
+        model = GC_DEC(
+            2, 2, 2, n_clusters=2, dropout=0.0, alpha=self.alpha, compat="modern"
+        ).double()
         model.gc1 = IdentityGraphConvolution()
         model.gc2 = IdentityGraphConvolution()
         model.mu = Parameter(self.centers.clone())

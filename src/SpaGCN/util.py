@@ -6,7 +6,8 @@ import random
 import torch
 from .SpaGCN import SpaGCN
 from ._clustering import graph_cluster_labels
-from ._data import gaussian_adjacency, mean_gaussian_neighborhood, pca_embedding
+from ._compat import default_init, resolve_compat
+from ._data import embed_expression, exp_adjacency, mean_neighborhood
 
 
 def prefilter_cells(
@@ -97,33 +98,33 @@ def prefilter_specialgenes(adata, Gene1Pattern="ERCC", Gene2Pattern="MT-"):
     adata._inplace_subset_var(id_tmp)
 
 
-def calculate_p(adj, l):
-    return mean_gaussian_neighborhood(adj, l) - 1
+def calculate_p(adj, l, compat=None):
+    return mean_neighborhood(adj, l, resolve_compat(compat)) - 1
 
 
-def test_l(adj, list_l):
+def test_l(adj, list_l, compat=None):
     for length_scale in list_l:
         print(
             "l is ",
             str(length_scale),
             "Percentage of total expression contributed by neighborhoods:",
-            calculate_p(adj, length_scale),
+            calculate_p(adj, length_scale, compat),
         )
 
 
-def find_l(p, adj, start=0.5, end=2, sep=0.01, tol=0.01):
+def find_l(p, adj, start=0.5, end=2, sep=0.01, tol=0.01, compat=None):
     for length_scale in np.arange(start, end, sep):
-        q = calculate_p(adj, length_scale)
+        q = calculate_p(adj, length_scale, compat)
         print("L=", str(length_scale), "P=", str(round(q, 5)))
         if np.abs(p - q) <= tol:
             return length_scale
     print("l not found, try bigger range or smaller sep!")
 
 
-def search_l(p, adj, start=0.01, end=1000, tol=0.01, max_run=100):
+def search_l(p, adj, start=0.01, end=1000, tol=0.01, max_run=100, compat=None):
     run = 0
-    p_low = calculate_p(adj, start)
-    p_high = calculate_p(adj, end)
+    p_low = calculate_p(adj, start, compat)
+    p_high = calculate_p(adj, end, compat)
     if p_low > p + tol:
         print("l not found, try smaller start point.")
         return None
@@ -167,7 +168,7 @@ def search_l(p, adj, start=0.01, end=1000, tol=0.01, max_run=100):
             )
             return None
         mid = (start + end) / 2
-        p_mid = calculate_p(adj, mid)
+        p_mid = calculate_p(adj, mid, compat)
         if np.abs(p_mid - p) <= tol:
             print("recommended l = ", str(mid))
             return mid
@@ -412,7 +413,9 @@ def plot_log_exp(input_adata, gene, x_name, y_name, color, use_raw=False):
     return fig
 
 
-def detect_subclusters(cell_id, x, y, pred, target_cluster, radius=3, res=0.2):
+def detect_subclusters(
+    cell_id, x, y, pred, target_cluster, radius=3, res=0.2, compat=None
+):
     df = {"cell_id": cell_id, "x": x, "y": y, "pred": pred}
     df = pd.DataFrame(data=df)
     df.index = df["cell_id"]
@@ -437,7 +440,7 @@ def detect_subclusters(cell_id, x, y, pred, target_cluster, radius=3, res=0.2):
     nbr[:, target_cluster] = nbr[:, target_cluster] - 1
     sub_cluster = graph_cluster_labels(
         nbr,
-        method="leiden",
+        method=default_init(compat),
         n_neighbors=10,
         resolution=res,
     )
@@ -568,12 +571,16 @@ def search_res(
     t_seed=100,
     n_seed=100,
     max_run=10,
+    compat=None,
 ):
+    compat = resolve_compat(compat)
     random.seed(r_seed)
     torch.manual_seed(t_seed)
     np.random.seed(n_seed)
-    embed = pca_embedding(adata.X, 50)
-    adj_exp = gaussian_adjacency(adj, l)
+    # Preprocessing is computed once: SpaGCN 1.2.7 recomputed it after
+    # reseeding for every trial, which yields the same result.
+    embed = embed_expression(adata.X, 50, compat)
+    adj_exp = exp_adjacency(adj, l, compat)
     res = start
     print("Start at res = ", res, "step = ", step)
     clf = SpaGCN()
@@ -582,11 +589,11 @@ def search_res(
         embed,
         adj_exp,
         init_spa=True,
-        init="leiden",
         res=res,
         tol=tol,
         lr=lr,
         max_epochs=max_epochs,
+        compat=compat,
     )
     y_pred, _ = clf.predict()
     old_num = len(set(y_pred))
@@ -603,11 +610,11 @@ def search_res(
             embed,
             adj_exp,
             init_spa=True,
-            init="leiden",
             res=res + step * old_sign,
             tol=tol,
             lr=lr,
             max_epochs=max_epochs,
+            compat=compat,
         )
         y_pred, _ = clf.predict()
         new_num = len(set(y_pred))
