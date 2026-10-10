@@ -3,7 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("spagcn-modern")
 except PackageNotFoundError:
-    __version__ = "1.4.0"
+    __version__ = "1.4.1"
 
 from ._compat import COMPAT_MODES, DEFAULT_COMPAT
 from .SpaGCN import SpaGCN, multiSpaGCN
