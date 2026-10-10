@@ -54,7 +54,13 @@ def detect_spatial_domains_ez_mode(
     )
     prefilter_genes(adata, min_cells=3)  # avoiding all genes are zeros
     prefilter_specialgenes(adata)
-    sc.pp.normalize_per_cell(adata)
+    # adj above has one row per input spot, so every spot must stay. The default
+    # min_counts=1 silently drops spots whose filtered expression sums to less
+    # than 1 (for example a spot with no counts in the selected genes), which
+    # leaves adj and the expression matrix with different numbers of spots.
+    # min_counts=0 keeps them (an all-zero row stays zero); inputs that ran
+    # before are normalized exactly as before.
+    sc.pp.normalize_per_cell(adata, min_counts=0)
     sc.pp.log1p(adata)
     l = search_l(p, adj, start=0.01, end=1000, tol=0.01, max_run=100, compat=compat)
     res = search_res(
